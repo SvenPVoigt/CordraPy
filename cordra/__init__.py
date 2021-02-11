@@ -1,6 +1,11 @@
 """ This is a simple Python library for interacting with the REST interface of an instance of Cordra.
 """
 
+# Set up requests and turn off warnings
+import requests
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
 from .cordra import CordraObject, Token
 
 

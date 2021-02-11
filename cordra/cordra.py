@@ -1,13 +1,19 @@
-import requests
+# Standard Library packages
+from uuid import UUID
+from typing import Union
 import json
+from functools import partial
+from copy import deepcopy
 
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
+# Other Libraries
+import requests
+from pydantic import BaseModel, Field, AnyHttpUrl
 
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+# Local imports
+from .utils import endpoint_url, check_response, set_auth, get_token_value, set_headers, removeNones
+from .auth import Auth
 
 # global variables
-objects_endpoint = "objects/"
-acls_endpoint = "acls/"
 token_create_endpoint = "auth/token"
 token_read_endpoint = "auth/introspect"
 token_delete_endpoint = "auth/revoke"
@@ -15,246 +21,144 @@ token_grant_type = "password"
 token_type = "Bearer"
 
 
-def endpoint_url(host, endpoint):
-    return host.strip("/") + "/" + endpoint
-
-
-def check_response(response):
-    if not response.ok:
-        try:
-            print(response.json())
-        except BaseException:
-            print(response.text)
-        response.raise_for_status()
-        return None
-    else:
-        try:
-            return response.json()
-        except BaseException:
-            return response.text
-
-
-def set_auth(username, password):
-    if username and password:
-        auth = requests.auth.HTTPBasicAuth(username, password)
-    else:
-        auth = None
-    return auth
-
-
-def get_token_value(token):
-    if isinstance(token, str):
-        return token
-    elif isinstance(token, dict):
-        try:
-            return token["access_token"]
-        except:
-            raise Exception("Token json format error.")
-    else:
-        raise Exception("Token format error.")
-
-
-def set_headers(token):
-    if token:
-        headers = dict()
-        headers["Authorization"] = token_type + " " + get_token_value(token)
-    else:
-        headers = None
-    return headers
-
-
-class CordraObject:
+#TODO: add CRUD tests to doctests
+class Engine:
     """
     Supports CRUD operations with a running Cordra instance.
 
     Attributes:
         host: the location of the cordra instance (URL).
-        obj_json: create the object from json.
-        obj_type: a valid type that exists in the cordra instance as a schema
+        objects_endpoint: the extension at which objects are located.
+        acls_endpoint: the extension at which acls are located.
 
-    >>> import cordrapy
-    >>> test_object = cordrapy.CordraObject()
-    >>> type(cordrapy.CordraObject())
-    <class 'cordrapy.cordra.CordraObject'>
+    >>> import cordra
+    >>> test_object = cordra.Engine("testhost")
+    >>> print(test_object)
+    Connection via CordraPy to testhost
     """
 
-    def create(
-        host,
-        obj_json,
-        obj_type,
-        handle=None,
-        suffix=None,
-        dryRun=False,
-        username=None,
-        password=None,
-        token=None,
-        verify=None,
-        full=False,
-        payloads=None,
-        acls=None,
-    ):
-        """Create a Cordra object"""
 
-        params = dict()
-        params["type"] = obj_type
-        if handle:
-            params["handle"] = handle
-        if suffix:
-            params["suffix"] = suffix
-        if dryRun:
-            params["dryRun"] = dryRun
-        if full:
-            params["full"] = full
+    def __init__(host, params=None, payloads=None, acls=None, verify=False):
+        # Constants
+        self.objects_endpoint="objects/"
+        self.acls_endpoint="acls/"
+        
+        # Variables
+        self.host = host
+        self.verify = verify
+        self.acls = acls
+        self.payloads = payloads
+
+
+        # Parameter Variable
+        self.params = {
+            "handle":None,
+            "suffix":None,
+            "dryRun":False,
+            "full":False,
+            "payloadToDelete":None,
+            "jsonPointer":None,
+            "filter":None
+        }
+
+        self.allowedParams = deepcopy(self.params.keys())
+
+        self.checkParams = lambda: self.params.keys() == self.allowedParams
+
+        if params:
+            self.params.update(params)
+            assert self.checkParams() 'Invalid params argument'
+
+        if self.params["acls"]:
+            self.params["full"] = True
+
+
+    def __str__():
+        return "Connection via CordraPy to %s"%self.host
+
+
+    def create(obj, postfunc=requests.post):
+        """Create an object on the Cordra instance corresponding to a
+        python CordraObject
+        
+        Attributes:
+            obj: an object of type CordraObject"""
+
+        assert isinstance(obj, CordraObject)
+
+        self.params["type"] = obj.type
 
         if payloads:  # multi-part request
-            data = dict()
-            data["content"] = json.dumps(obj_json)
-            if acls:
-                data["acl"] = json.dumps(acls)
-            r = check_response(
-                requests.post(
-                    endpoint_url(host, objects_endpoint),
-                    params=params,
-                    files=payloads,
-                    data=data,
-                    auth=set_auth(username, password),
-                    headers=set_headers(token),
-                    verify=verify,
-                )
-            )
-            return r
-        else:  # simple request
-            if acls:
-                params["full"] = True
-            obj_r = check_response(
-                requests.post(
-                    endpoint_url(host, objects_endpoint),
-                    params=params,
-                    data=json.dumps(obj_json),
-                    auth=set_auth(username, password),
-                    headers=set_headers(token),
-                    verify=verify,
-                )
-            )
+            postfunc = partial(postfunc, files=self.payloads)
 
-            if acls and not dryRun:
-                obj_id = obj_r["id"]
-                acl_r = check_response(
-                    requests.put(
-                        endpoint_url(host, acls_endpoint) + obj_id,
-                        params=params,
-                        data=json.dumps(acls),
-                        auth=set_auth(username, password),
-                        headers=set_headers(token),
-                        verify=verify,
-                    )
-                )
-                return [obj_r, acl_r]
-            else:
-                return obj_r
+        data = {
+            "content": obj.json()
+            "acl": json.dumps(self.params["acls"])
+        }
 
-    def read(
-        host,
-        obj_id,
-        username=None,
-        password=None,
-        token=None,
-        verify=None,
-        jsonPointer=None,
-        jsonFilter=None,
-        full=False,
-    ):
-        """Retrieve a Cordra object JSON by identifer."""
-
-        params = dict()
-        params["full"] = full
-        if jsonPointer:
-            params["jsonPointer"] = jsonPointer
-        if jsonFilter:
-            params["filter"] = str(jsonFilter)
         r = check_response(
-            requests.get(
-                endpoint_url(host, objects_endpoint) + obj_id,
-                params=params,
+            postfunc(
+                endpoint_url(self.host, self.objects_endpoint),
+                params=removeNones(self.params),
+                data=removeNones(data),
                 auth=set_auth(username, password),
                 headers=set_headers(token),
-                verify=verify,
+                verify=self.verify
             )
         )
+
         return r
 
-    def read_payload_info(
-        host, obj_id, username=None, password=None, token=None, verify=None
-    ):
-        """Retrieve a Cordra object payload names by identifer."""
 
-        params = dict()
-        params["full"] = True
+    def read(obj_id, payloads=False, jsonPointer=None, jsonFilter=None):
+        """Retrieve an object from Cordra by identifer and create a
+        python CordraObject."""
+        
         r = check_response(
             requests.get(
-                endpoint_url(host, objects_endpoint) + obj_id,
-                params=params,
+                endpoint_url(self.host, self.objects_endpoint) + obj_id,
+                params=self.params,
                 auth=set_auth(username, password),
                 headers=set_headers(token),
-                verify=verify,
+                verify=self.verify
             )
         )
-        return r["payloads"]
 
-    def read_payload(
-        host, obj_id, payload, username=None, password=None, token=None, verify=None
-    ):
+        obj = CordraObject.parse_raw( r.json() )
+
+        if payloads:
+            payload_info = r["payloads"]
+            obj.set(payload_info) = read_payload(obj_id, payload_info)
+
+        return obj
+
+
+    def read_payload(obj_id, payload_info):
         """Retrieve a Cordra object payload by identifer and payload name."""
 
-        params = dict()
-        params["payload"] = payload
         r = check_response(
             requests.get(
-                endpoint_url(host, objects_endpoint) + obj_id,
-                params=params,
+                endpoint_url(self.host, self.objects_endpoint) + obj_id,
+                params=payload_info,
                 auth=set_auth(username, password),
                 headers=set_headers(token),
-                verify=verify,
+                verify=self.verify
             )
         )
+
         return r
 
-    def update(
-        host,
-        obj_id,
-        obj_json=None,
-        jsonPointer=None,
-        obj_type=None,
-        dryRun=False,
-        username=None,
-        password=None,
-        token=None,
-        verify=None,
-        full=False,
-        payloads=None,
-        payloadToDelete=None,
-        acls=None,
-    ):
+
+    def update(obj):
         """Update a Cordra object"""
 
-        params = dict()
-        if obj_type:
-            params["type"] = obj_type
-        if dryRun:
-            params["dryRun"] = dryRun
-        if full:
-            params["full"] = full
-        if jsonPointer:
-            params["jsonPointer"] = jsonPointer
-        if payloadToDelete:
-            params["payloadToDelete"] = payloadToDelete
+        assert obj.identifier is not None
 
         if payloads:  # multi-part request
-            if not obj_json:
-                raise Exception("obj_json is required when updating payload")
-            data = dict()
-            data["content"] = json.dumps(obj_json)
-            data["acl"] = json.dumps(acls)
+
+        data = dict()
+        data["content"] = json.dumps(obj_json)
+        data["acl"] = json.dumps(acls)
             r = check_response(
                 requests.put(
                     endpoint_url(host, objects_endpoint) + obj_id,
