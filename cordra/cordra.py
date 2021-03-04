@@ -72,10 +72,9 @@ class CordraObject:
         obj_json: create the object from json.
         obj_type: a valid type that exists in the cordra instance as a schema
 
-    >>> import cordrapy
-    >>> test_object = cordrapy.CordraObject()
-    >>> type(cordrapy.CordraObject())
-    <class 'cordrapy.cordra.CordraObject'>
+    >>> import cordra
+    >>> test_object = cordra.CordraObject()
+    >>> assert isinstance(test_object, cordra.CordraObject)
     """
 
     def create(
