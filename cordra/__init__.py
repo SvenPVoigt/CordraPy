@@ -6,7 +6,7 @@ import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-from .cordra import CordraObject, Token
+from .cordra import CordraObject, Engine
 
 
 def get_version():
