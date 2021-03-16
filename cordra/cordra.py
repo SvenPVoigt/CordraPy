@@ -4,14 +4,19 @@ from typing import Union, Callable, Any, Dict
 import json
 from functools import partial
 from enum import Enum
+from io import BytesIO
+import warnings
+import sys
+import pickle
+import os
 
 # Other Libraries
 import requests
-from requests import Response, Session
+from requests import Response, Session, Request
 from pydantic import BaseModel, Field, AnyHttpUrl, Extra, FilePath
 
 # Local imports
-from .utils import check_response
+from .utils import check_response, pretty_print_POST
 
 
 # All the parameters allowed by the Cordra REST API
@@ -60,10 +65,10 @@ class Engine(BaseModel):
         # Wrapper also automatically converts to dictionary format if possible
         self._session.send = check_response( self._session.send )
         self._session.verify = self.verify
-        self._session.headers = {"Content-Type": "application/json"}
+        # self._session.headers.update( {"Content-Type": "application/json"} )
         if self.acl:
             self.params["full"] = True
-        self._session.params = self.params
+        self._session.params = {k.name: v for k,v in self.params.items()}
 
         self._auth_url = partial( self._url, "auth" )
         self._objects_url = partial( self._url, "objects" )
@@ -84,7 +89,7 @@ class Engine(BaseModel):
         data = {"grant_type":"password"}
         data.update(login)
         print(self._auth_url("token"))
-        r = self._session.post( self._auth_url("token"), data=json.dumps(data) )
+        r = self._session.post( self._auth_url("token"), json=data )
 
         # Set up variables and default auth for future requests
         self._token = r["access_token"]
@@ -119,19 +124,24 @@ class Engine(BaseModel):
 
         params["type"] = obj.type
 
-        headers = {}
-        if self.payloads:  # multi-part request
-            headers = {"Content-Type": "multipart/form-data"}
 
+        headers = {}
         data = { "content": obj.json() }
-            
         if acl:
-            params["full"] = True
+            # params["full"] = True
             data.update( {"acl": json.dumps(acl) } )
 
-        self._session.post(
-            self._objects_url(), data=json.dumps(data), params=params, files=obj._payloads
-        )
+        if len(obj._payloads) > 0:  # multi-part request
+            files= { 
+                name: (filename, BytesIO(filebytes)) 
+                for name, (filename, filebytes) in obj._payloads.items() 
+            }
+
+            return self._session.post(
+                self._objects_url(), params=params, data=data, files=files
+            )
+
+        return self._session.post(self._objects_url(), json=data, params=params)
 
 
     def read(self, obj_id, payload=False, jsonPointer=None, jsonFilter=None):
@@ -258,5 +268,58 @@ class Engine(BaseModel):
 
 class CordraObject(BaseModel):
     type: str
+    id: UUID=None
     _engine: Engine=None
-    _payloads: Dict=None
+    _payloads: Dict=dict()
+
+
+    class Config:
+        arbitrary_types_allowed = True
+        validate_assignment = True
+        extra = Extra.allow #Options are Extra.forbid and Extra.allow not T/F
+
+    
+    def __init__(self, **initialization):
+        super().__init__(**initialization)
+        if engine:
+            res = self._engine.create(self)
+            self._id = res["id"]
+
+
+    def add(self, title, filepath_or_bytes, filename=None):
+        """Add an object to this class from filepath or bytes"""
+        
+        if isinstance(filepath_or_bytes, bytes):
+            if filename is None:
+                filename = title
+            self._payloads[title] = (filename, filepath_or_bytes)
+
+        elif os.path.isfile(filepath_or_bytes):
+            if filename is None:
+                filename = os.path.basename(filepath_or_bytes)
+            with open(filepath_or_bytes, 'rb') as f:
+                self._payloads[title] = (filename, f.read())
+
+        else:
+            raise OSError("No bytes object identified and File does not exist!")
+
+
+    def get(self, title, filename=False):
+        if filename:
+            return self._payloads[title]
+
+        return self._payloads[title][1]
+
+
+    def add_object(self, title, pythonObject):
+        # Raise insecure warning
+        warnings.warn("""Pickled objects are executed on read and are insecure!""")
+        # Pickled object in bytes
+        # Python version
+        # ObjectType
+        raise NotImplementedError("Pickling is insecure and we are still working on this feature.")
+
+    def get_object(self, title):
+        # Raise insecure warning
+        warnings.warn("""Pickled objects are executed on read and are insecure!""")
+        raise NotImplementedError("Pickling is insecure and we are still working on this feature.")

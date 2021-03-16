@@ -25,43 +25,18 @@ def check_response(send):
     return wrapper
 
 
-def get_token_value(token):
-    if isinstance(token, str):
-        return token
-    elif isinstance(token, dict):
-        try:
-            return token["access_token"]
-        except:
-            raise Exception("Token json format error.")
-    else:
-        raise Exception("Token format error.")
+def pretty_print_POST(req):
+    """
+    At this point it is completely built and ready
+    to be fired; it is "prepared".
 
-
-def set_headers(token):
-    if token:
-        headers = dict()
-        headers["Authorization"] = token_type + " " + get_token_value(token)
-    else:
-        headers = None
-    return headers
-
-
-def removeNones(obj):
-    return {k: v for k, v in obj.items() if v is not None}
-
-
-def get_auth(credentials_file):
-    with open( credentials_file ) as loginfile:
-        login = json.load(loginfile)
-
-    data = {"grant_type":"password"}
-    data.update(login)
-
-    r = requests.post(
-        "https://localhost:8443/auth/token",
-        data=data,
-        verify=False
-    )
-
-    if (r.ok):
-        return 
+    However pay attention at the formatting used in 
+    this function because it is programmed to be pretty 
+    printed and may differ from the actual request.
+    """
+    print('{}\n{}\r\n{}\r\n\r\n{}'.format(
+        '-----------START-----------',
+        req.method + ' ' + req.url,
+        '\r\n'.join('{}: {}'.format(k, v) for k, v in req.headers.items()),
+        req.body.decode("utf-8", errors="backslashreplace"),
+    ))
