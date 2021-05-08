@@ -9,6 +9,7 @@ import warnings
 import sys
 import pickle
 import os
+import copy
 
 # Other Libraries
 import requests
@@ -20,14 +21,43 @@ from .utils import check_response, pretty_print_POST
 
 
 # All the parameters allowed by the Cordra REST API
-AllowedParams = \
-    "type handle suffix dryRun full payloadToDelete jsonPointer filter".split(" ")
-AllowedParams = Enum("AllowedParams", zip(AllowedParams, AllowedParams))
+createEnum = lambda L: Enum("dynamic", {str(i): val for i, val in enumerate(L)})
+
+AllowedParams = "type handle suffix dryRun full payloadToDelete jsonPointer filter"
+
+DefaultParams = createEnum( "handle suffix dryRun".split(" ") )
+CreateParams = createEnum( "type".split(" ") )
+ReadParams = createEnum( "jsonPointer filter".split(" ") )
+UpdateParams = createEnum( "payloadToDelete jsonPointer filter".split(" ") )
 
 
-class Engine(BaseModel):
+class CordraClient(BaseModel):
     """
-    Supports CRUD operations with a running Cordra instance.
+    Supports CRUD operations with a running Cordra instance allows access to the full 
+    functionality of the Cordra REST API. This includes:
+    * Authorization using user / password
+    * Authorization using a secret key
+    * Provide a token for subsequent authorization
+    * Delete a token
+    * Create a cordra object
+    * Setting the ACL on a cordra object on create
+    * Updating a cordra object
+    * Updating a cordra object attribute
+    * Updating a cordra object payload
+    * Updating the ACL of a cordra object
+    * Deleting a cordra object
+    * Deleting a cordra object attribute
+    * Deleting a cordra object payload
+    * Querying cordra
+
+    The CordraClient also provides the additional features:
+    * Checking that params are valid Cordra parameters
+    * Can set default params for all subsequent operations
+    * The full param will always be true (not necessarily a feature)
+    * Iteratively pulls all payloads for an object. 
+        * Allows the user to call one read operation and retrieve all payloads
+    * Reading all schemas from a remote Cordra instance and turning them into python classes
+    * Default ACL always includes creator
 
     Attributes:
         host: the location of the cordra instance (URL).
@@ -35,17 +65,17 @@ class Engine(BaseModel):
         acls_endpoint: the extension at which acls are located.
 
     >>> import cordra
-    >>> test_object = cordra.Engine("testhost")
+    >>> test_object = cordra.CordraInstance("testhost")
     >>> print(test_object)
     Connection via CordraPy to testhost
     """
 
     host: AnyHttpUrl
     credentials_file: FilePath
-    params: Dict[AllowedParams, Any]=Field( dict(),
+    params: Dict[DefaultParams, Any]=Field( dict(),
         description="default parameters for Cordra Requests" )
     payloads: Dict[str, Any]=dict()
-    acl: Dict=dict()
+    # acl: Dict=dict()
     verify: bool=True
     _session: Session=Session()
     _token: str=None
@@ -57,6 +87,7 @@ class Engine(BaseModel):
         arbitrary_types_allowed = True
         validate_assignment = True
         extra = Extra.allow #Options are Extra.forbid and Extra.allow not T/F
+        use_enum_values = True
 
 
     def __init__(self, **initialization):
@@ -65,10 +96,14 @@ class Engine(BaseModel):
         # Wrapper also automatically converts to dictionary format if possible
         self._session.send = check_response( self._session.send )
         self._session.verify = self.verify
-        # self._session.headers.update( {"Content-Type": "application/json"} )
-        if self.acl:
-            self.params["full"] = True
-        self._session.params = {k.name: v for k,v in self.params.items()}
+
+        # Pydantic casts the keys to an enum item; must get name of enum item to
+        # get back dictionary
+        # Work under the assumption of full = True. Then, getting payloads is easier,
+        # checking the auth is easier, need to do less checks on whether we need to
+        # retrieve as content or not, etc.
+        self.params.update({"full": True})
+        self._session.params = self.params
 
         self._auth_url = partial( self._url, "auth" )
         self._objects_url = partial( self._url, "objects" )
@@ -88,7 +123,7 @@ class Engine(BaseModel):
         # Complete the Cordra auth request
         data = {"grant_type":"password"}
         data.update(login)
-        print(self._auth_url("token"))
+
         r = self._session.post( self._auth_url("token"), json=data )
 
         # Set up variables and default auth for future requests
@@ -102,149 +137,124 @@ class Engine(BaseModel):
         """Checks an access Token"""
         data = {"token": self._token}
         params = {"full": True}
-        r = self._session.post( self._auth_url("introspect"), params=params, data=data)
+        r = self._session.post( self._auth_url("introspect"), params=params, json=data)
         return r
 
 
     def delete_auth(self):
         """Delete an access Token"""
         data = {"token": self._token}
-        self._session.post( self._auth_url("revoke"), data=data)
+        self._session.post( self._auth_url("revoke"), json=data)
 
 
-    def create(self, obj, params=dict(), acl=None):
-        """Create an object on the Cordra instance corresponding to a
-        python CordraObject
+    def write(self, action, obj, params=dict(), acl=None):
+        """Writes an object to the Cordra instance at the host url.
         
         Attributes:
-            obj: an object of type CordraObject"""
+            obj: an object of type CordraObject
+            params: REST API parameters
+            acl: access control list of allowed readers and writers of object.
+                Updates, but doesn't overwrite, the default acl set on the client."""
 
         assert isinstance(obj, CordraObject)
         assert isinstance(params, dict)
 
-        params["type"] = obj.type
-
-
-        headers = {}
-        data = { "content": obj.json() }
-        if acl:
-            # params["full"] = True
-            data.update( {"acl": json.dumps(acl) } )
-
-        if len(obj._payloads) > 0:  # multi-part request
-            files= { 
+        # Multi-Part Form
+        if len(obj._payloads) > 0:
+            data = { "content": obj.json() }
+            files = { 
                 name: (filename, BytesIO(filebytes)) 
                 for name, (filename, filebytes) in obj._payloads.items() 
             }
 
-            return self._session.post(
-                self._objects_url(), params=params, data=data, files=files
-            )
+            return action(params=params, data=data, files=files)
 
-        return self._session.post(self._objects_url(), json=data, params=params)
+        return action(params=params, json=obj.dict(exclude_none=True))
 
 
-    def read(self, obj_id, payload=False, jsonPointer=None, jsonFilter=None):
+    def create(self, obj, params=dict(), acl=None):
+        """Uses write to create and object"""
+
+        params["type"] = obj.type
+
+        # if acl or self.acl:
+        #     tmp_acl = dict(self.acl)
+        #     tmp_acl.update(acl)
+        #     data.update( {"acl": json.dumps(tmp_acl) } )
+
+        action = partial( self._session.post, url=self._objects_url() )
+
+        return self.write(action, obj, params, acl)
+
+
+    def update(self, obj, params=dict(), updatePayloads=True, acl=None):
+        """Uses write to update an object"""
+
+        params["type"] = obj.type
+        action = partial( self._session.put, url=self._objects_url(obj.id) )
+
+        update_obj = copy.copy(obj)
+        if updatePayloads:
+            update_obj._payloads = obj._payloads
+
+        update_obj._payloads = dict()
+
+        return self.write(action, update_obj, params, acl)
+
+
+    def read(self, obj_id, params=dict(), getAll=False):
         """Retrieve an object from Cordra by identifer and create a
         python CordraObject."""
 
-        params["jsonPointer"] = jsonPointer
-        params["filter"] = jsonFilter
-        if payloads==True:
-            params["payloads"] = True
-        elif payloads:
-            params["payloads"] = payloads
+        # Can add a jsonPointer, filter, and payload key
+        assert isinstance(params, dict)
+
+        if "payload" in params.keys():
+            assert isinstance(params["payload"], str)
         
+            return self._session.get(self._objects_url( obj_id ), params=params)
+
+        # print(obj_id, params)
         r = self._session.get(self._objects_url( obj_id ), params=params)
+        # print(r)
+        obj = CordraObject.parse_obj(r['content'])
+        obj.id = r["id"]
 
-        if payload:
-            payload_info = r["payloads"]
-            for payload in payload_info:
-                print(payload)
+        if getAll:
+            for payload in r["payloads"]:
+                r = self.read(obj_id, params={"payload": payload["name"]})
 
+                if isinstance(r, str):
+                    r = r.encode()
+                elif isinstance(r, dict):
+                    r = json.dumps(r).encode()
+                elif isinstance(r, bytes):
+                    pass
+                else:
+                    raise ValueError(f"Response content for payload, {payload['name']} is not of an acceptable type. Accepted types include (str, dict, bytes).")
 
-        obj = CordraObject.parse_raw( r.json() )
+                obj.add( payload["name"], r )
+
 
         return obj
 
 
-    def read_payload(obj_id, payload_info):
-        """Retrieve a Cordra object payload by identifer and payload name."""
+    def delete(self, obj, jsonPointer=None, payload=None):
+        """Delete a Cordra object or part of a Cordra Object"""
 
-        r = check_response(
-            requests.get(
-                endpoint_url(self.host, self.objects_endpoint) + obj_id,
-                params=payload_info,
-                auth=set_auth(username, password),
-                headers=set_headers(token),
-                verify=self.verify
-            )
-        )
+        delete_params = {
+            jsonPointer: jsonPointer,
+            payload: payload
+        }
+
+        delete_params = {k:v for k,v in delete_params.items() if v}
+
+        r = self._session.delete( url=self._objects_url(obj.id), params=delete_params )
 
         return r
 
 
-    def update(obj):
-        """Update a Cordra object"""
-
-        assert obj.identifier is not None
-
-        # if payloads:  # multi-part request
-
-        data = dict()
-        data["content"] = json.dumps(obj_json)
-        data["acl"] = json.dumps(acl)
-        r = check_response(
-            requests.put(
-                endpoint_url(host, objects_endpoint) + obj_id,
-                params=params,
-                files=payloads,
-                data=data,
-                auth=set_auth(username, password),
-                headers=set_headers(token),
-                verify=verify,
-            )
-        )
-        return r
-
-
-    def delete(
-        host,
-        obj_id,
-        jsonPointer=None,
-        username=None,
-        password=None,
-        token=None,
-        verify=None,
-    ):
-        """Delete a Cordra object"""
-
-        params = dict()
-        if jsonPointer:
-            params["jsonPointer"] = jsonPointer
-
-        r = check_response(
-            requests.delete(
-                endpoint_url(host, objects_endpoint) + obj_id,
-                params=params,
-                auth=set_auth(username, password),
-                headers=set_headers(token),
-                verify=verify,
-            )
-        )
-        return r
-
-    def find(
-        host,
-        query,
-        username=None,
-        password=None,
-        token=None,
-        verify=None,
-        ids=False,
-        jsonFilter=None,
-        full=False,
-    ):
+    def find(query, params, ids=False, jsonFilter=None, full=False):
         """Find a Cordra object by query"""
 
         params = dict()
@@ -254,22 +264,27 @@ class Engine(BaseModel):
             params["filter"] = str(jsonFilter)
         if ids:
             params["ids"] = True
-        r = check_response(
-            requests.get(
-                endpoint_url(host, objects_endpoint),
+        r = self._session.get(
+                self._objects_url(),
                 params=params,
                 auth=set_auth(username, password),
                 headers=set_headers(token),
                 verify=verify,
             )
-        )
+
         return r
+
+
+def tocordrajson(obj, **kwargs):
+    obj = {k: v for k, v in obj.items() if v is not None}
+    return json.dumps(obj, **kwargs)
 
 
 class CordraObject(BaseModel):
     type: str
-    id: UUID=None
-    _engine: Engine=None
+    id: str=None
+    related: "CordraObject"=None
+    _cordraclient: CordraClient=None
     _payloads: Dict=dict()
 
 
@@ -277,15 +292,40 @@ class CordraObject(BaseModel):
         arbitrary_types_allowed = True
         validate_assignment = True
         extra = Extra.allow #Options are Extra.forbid and Extra.allow not T/F
+        json_encoders = {
+            BaseModel: lambda obj: obj.id,
+            # datetime: lambda v: v.timestamp(),
+            # timedelta: timedelta_isoformat,
+        }
 
     
     def __init__(self, **initialization):
         super().__init__(**initialization)
-        if engine:
-            res = self._engine.create(self)
-            self._id = res["id"]
+        # If an id was passed, pull the object from Cordra
+        # if self.id:
+        #     self.sync_from_remote()
+        # Else, if there is a connection a remote Cordra instance
+        # then create the object and obtain an id
+        if self._cordraclient:
+            self.create()
 
 
+    # def __setattr__(self, key, val):
+    #     if isinstance(val, CordraObject):
+    #         val = val.id
+            
+    #     self.__dict__[key] = val
+
+
+    # Data property
+    def data(self):
+        if filename:
+            return self._payloads[title]
+
+        return self._payloads[title][1]
+
+
+    # Add data
     def add(self, title, filepath_or_bytes, filename=None):
         """Add an object to this class from filepath or bytes"""
         
@@ -323,3 +363,6 @@ class CordraObject(BaseModel):
         # Raise insecure warning
         warnings.warn("""Pickled objects are executed on read and are insecure!""")
         raise NotImplementedError("Pickling is insecure and we are still working on this feature.")
+
+
+CordraObject.update_forward_refs()

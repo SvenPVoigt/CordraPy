@@ -20,7 +20,7 @@ def check_response(send):
             try:
                 return response.json()
             except BaseException:
-                return response.text
+                return response.content
 
     return wrapper
 
