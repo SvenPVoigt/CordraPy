@@ -14,7 +14,7 @@ import copy
 # Other Libraries
 import requests
 from requests import Response, Session, Request
-from pydantic import BaseModel, Field, AnyHttpUrl, Extra, FilePath
+from pydantic import BaseModel, Field, AnyHttpUrl, Extra, FilePath, PrivateAttr
 
 # Local imports
 from .utils import check_response, pretty_print_POST
@@ -182,6 +182,8 @@ class CordraClient(BaseModel):
         #     tmp_acl.update(acl)
         #     data.update( {"acl": json.dumps(tmp_acl) } )
 
+        # print(obj)
+
         action = partial( self._session.post, url=self._objects_url() )
 
         return self.write(action, obj, params, acl)
@@ -190,14 +192,15 @@ class CordraClient(BaseModel):
     def update(self, obj, params=dict(), updatePayloads=True, acl=None):
         """Uses write to update an object"""
 
+        assert obj.id is not None, "CordraObject needs id to update"
+
         params["type"] = obj.type
         action = partial( self._session.put, url=self._objects_url(obj.id) )
 
-        update_obj = copy.copy(obj)
-        if updatePayloads:
-            update_obj._payloads = obj._payloads
+        update_obj = obj.copy()
 
-        update_obj._payloads = dict()
+        if not updatePayloads:
+            setattr( update_obj, "_payloads", dict() )
 
         return self.write(action, update_obj, params, acl)
 
@@ -216,7 +219,7 @@ class CordraClient(BaseModel):
 
         # print(obj_id, params)
         r = self._session.get(self._objects_url( obj_id ), params=params)
-        # print(r)
+        # print(json.dumps(r, indent=2))
         obj = CordraObject.parse_obj(r['content'])
         obj.id = r["id"]
 
@@ -254,7 +257,7 @@ class CordraClient(BaseModel):
         return r
 
 
-    def find(query, params, ids=False, jsonFilter=None, full=False):
+    def find(self, query, params, ids=False, jsonFilter=None, full=False):
         """Find a Cordra object by query"""
 
         params = dict()
@@ -276,16 +279,17 @@ class CordraClient(BaseModel):
 
 
 def tocordrajson(obj, **kwargs):
-    obj = {k: v for k, v in obj.items() if v is not None}
-    return json.dumps(obj, **kwargs)
+    instance_dict = copy.deepcopy( obj.__dict__ )
+    instance_dict = {k: v for k, v in instance_dict.items() if v is not None}
+    return json.dumps(instance_dict, **kwargs)
 
 
 class CordraObject(BaseModel):
     type: str
     id: str=None
     related: "CordraObject"=None
-    _cordraclient: CordraClient=None
-    _payloads: Dict=dict()
+    _cordraclient: CordraClient=PrivateAttr()
+    _payloads: Dict=PrivateAttr()
 
 
     class Config:
@@ -306,8 +310,13 @@ class CordraObject(BaseModel):
         #     self.sync_from_remote()
         # Else, if there is a connection a remote Cordra instance
         # then create the object and obtain an id
-        if self._cordraclient:
+        self._payloads = dict()
+
+        if isinstance(self.__private_attributes__["_cordraclient"], CordraClient):
             self.create()
+
+    def json(self):
+        return tocordrajson(self)
 
 
     # def __setattr__(self, key, val):
@@ -318,7 +327,7 @@ class CordraObject(BaseModel):
 
 
     # Data property
-    def data(self):
+    def data(self, title):
         if filename:
             return self._payloads[title]
 
@@ -349,6 +358,10 @@ class CordraObject(BaseModel):
             return self._payloads[title]
 
         return self._payloads[title][1]
+
+
+    def rem(self, title):
+        return self._payloads.pop(title, None)
 
 
     def add_object(self, title, pythonObject):

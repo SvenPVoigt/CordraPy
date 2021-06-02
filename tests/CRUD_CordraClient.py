@@ -25,91 +25,162 @@ from io import BytesIO
 from PIL import Image
 import json
 import requests
+import copy
+
+
+
+# Deepcopy inputs to force a local scope
+def deepcopy(func):
+    def wrap(*args, **kwargs):
+        print(func.__name__)
+        args = list(args)
+        for i, arg in enumerate(args):
+            args[i] = copy.deepcopy(arg)
+        for k, v in enumerate(kwargs):
+            kwargs[k] = copy.deepcopy(v)
+        func(*args, **kwargs)
+    return wrap
+
 
 # Connect to the test repository
 repository = CordraClient(host="https://localhost:8443/", credentials_file="secretlogin.json", verify=False)
 
+# Define the document object without a remote repository
+document = CordraObject(type="Document", awesome="superb")
 
-
-
-# Test 1 - Check that a python CordraObject matches the remote Cordra Object
-test = CordraObject(type="Document", awesome="test") # Create python CordraObject without remote
-test.hello = "world"
-
-r = repository.create(test) # Write to Cordra
-test.id = str( r["id"] ) # Update the id from None to the id assigned by Cordra
-
-test_remote = repository.read( test.id ) # Read the cordra object and compare to original
-
-assert test.dict() == test_remote.dict(), \
-    "Remote and local objects are note the same." # Check equivalence of objects' dicts
-
-
-
-
-# Test 2 - Create python CordraObject with payloads. Check that local and remote payloads are equal
+# Define a document object with JSON and Image payloads
+document_payloads = CordraObject(type="Document")
 J = {"a": "a", "b":"b"}
-test.add("test.json", json.dumps(J).encode()) # Add a json payload as bytes
+document_payloads.add("document.json", json.dumps(J).encode()) # Add a json payload as bytes
 
 stream = BytesIO()
 A = Image.radial_gradient("L").resize((11,11))
 A.save(stream, format="PNG") # Write a png image to bytes object
-test.add("radial.png", stream.getvalue()) # Add the png (in bytes) as payload
-
-r = repository.create(test) # Create cordra object with payloads
-test.id = str( r["id"] ) # Update the id from None to the id assigned by Cordra
-
-test_remote = repository.read( test.id, getAll=True ) # Read the Object and Payloads
-
-K = json.loads( test_remote.get("test.json").decode('utf-8') ) # Decode payload bytes
-assert J==K, "JSON payload was corrupted."
-
-B = test_remote.get("radial.png")
-assert stream.getvalue()==B, "Image bytes were corrupted."
+document_payloads.add("radial.png", stream.getvalue()) # Add the png (in bytes) as payload
 
 
 
 
-# Test 3 - Update an object (Reuse object from Test 2)
-test.updateditem = "SendUpdate" # Update the attributes of object
-L = {"c": "c", "d":"d"}
-test.add("test.json", json.dumps(L).encode()) # Update the JSON payload
-print(test.__dict__)
-print(test._payloads)
-repository.update(test, updatePayloads=False)
+# Test 1 - Check that a python CordraObject can be created and updated locally and correctly 
+# write to Cordra
+@deepcopy
+def Test1(document):
+    document.hello = "world" # Update the python instance
 
-test_remote = repository.read( test.id ) # Check that the updated objects are the same
-assert test.dict() == test_remote.dict(), "Updated object attributes differ after synced update."
+    r = repository.create(document) # Write to Cordra
+    document.id = str( r["id"] ) # Update the id from None to the id assigned by Cordra
 
-test_remote = repository.read( test.id, getAll=True )
-K = json.loads( test_remote.get("test.json").decode('utf-8') )
-assert J==K, "JSON payloads differ after synced update."
+    document_remote = repository.read( document.id ) # Read the cordra object and compare to local
+
+    assert document.dict() == document_remote.dict(), \
+        "Remote and local objects are note the same." # Check equivalence of objects' dicts
+
+    return document
+
+
+
+
+# Test 2 - Check that local and remote payloads are equal
+@deepcopy
+def Test2(document):
+    r = repository.create(document) # Create cordra object with payloads
+    document.id = str( r["id"] ) # Update the id from None to the id assigned by Cordra
+
+    document_remote = repository.read( document.id, getAll=True ) # Read the Object and Payloads
+
+    K = json.loads( document_remote.get("document.json").decode('utf-8') ) # Decode payload bytes
+    assert J==K, "JSON payload was corrupted."
+
+    B = document_remote.get("radial.png")
+    assert stream.getvalue()==B, "Image bytes were corrupted."
+
+    return document
+
+
+
+
+# Test 3 - Check that an update can be successfully written to an object that already exists
+# in Cordra.
+@deepcopy
+def Test3(document):
+    r = repository.create(document)
+    document.id = str( r["id"] )
+
+    # Update everything but payloads (faster updates)
+    document.awesome = "wonderful" # Update the existing attributes of object
+    document.updateditem = "SendUpdate" # Update new attributes of object
+    repository.update(document, updatePayloads=False)
+
+    document_remote = repository.read( document.id ) # Check that the updated objects are the same
+    assert document.dict() == document_remote.dict(), \
+        "Updated object attributes differ after synced update."
+
+
+    # Update everything
+    L = {"c": "c", "d":"d"}
+    document.add("document.json", json.dumps(L).encode()) # Update the JSON payload
+    repository.update(document)
+
+    document_remote = repository.read( document.id, getAll=True )
+    K = json.loads( document_remote.get("document.json").decode('utf-8') )
+    assert L==K, "JSON payloads differ after synced update."
+
+    return document
 
 
 
 
 # Test 4 - Deletion of payloads and properties
-## Delete a payload
-### Verify payload doesn't exist
-
-## Delete a property of object
-### Verify property doesn't exist
-
-
-# Test 5 - Delete an object
-## Delete the object
-repository.delete(test)
-### Verify the object does not exist
-try:
-    print( repository.read(test.id) )
-except requests.exceptions.HTTPError:
-    print("Object deleted successfully")
-
-# Test 6 - Update ACLs
-## create user
-# guest = 
-## create object with ACL that includes created user
-## create an engine with the new user credentials
-## check that object can be edited by the new user
+@deepcopy
+def Test4(document):
+    # Delete a payload
+    # Verify local no longer has the payload
+    # Verify local and remote are the same
+    # Delete a property of object
+    # Verify local no longer has the property
+    # Verify local and remote are the same
+    return document
 
 
+
+
+# Test 5 - Update ACLs
+@deepcopy
+def Test5(document):
+    ## create user
+    # guest = 
+    ## create object with ACL that includes created user
+    ## create an engine with the new user credentials
+    ## check that object can be edited by the new user
+    return document
+
+
+
+
+# Test 6 - Delete an object
+@deepcopy
+def Test6(document):
+    # Delete the object
+    repository.delete(document)
+    # Verify the object does not exist
+    try:
+        repository.read(document.id)
+        assert False, "Object was NOT deleted"
+    except requests.exceptions.HTTPError:
+        pass
+
+
+
+
+
+if __name__ == "__main__":
+    documents_returned = [
+        Test1(document),
+        Test2(document_payloads),
+        Test3(document_payloads),
+        Test4(document_payloads),
+        Test5(document)
+    ]
+
+    for d in documents_returned:
+        Test6(d)
