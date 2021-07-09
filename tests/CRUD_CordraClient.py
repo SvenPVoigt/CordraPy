@@ -32,13 +32,12 @@ import copy
 # Deepcopy inputs to force a local scope
 def deepcopy(func):
     def wrap(*args, **kwargs):
-        print(func.__name__)
         args = list(args)
         for i, arg in enumerate(args):
             args[i] = copy.deepcopy(arg)
         for k, v in enumerate(kwargs):
             kwargs[k] = copy.deepcopy(v)
-        func(*args, **kwargs)
+        return func(*args, **kwargs)
     return wrap
 
 
@@ -46,10 +45,10 @@ def deepcopy(func):
 repository = CordraClient(host="https://localhost:8443/", credentials_file="secretlogin.json", verify=False)
 
 # Define the document object without a remote repository
-document = CordraObject(type="Document", awesome="superb")
+document = CordraObject(_type="Document", awesome="superb")
 
 # Define a document object with JSON and Image payloads
-document_payloads = CordraObject(type="Document")
+document_payloads = CordraObject(_type="Document")
 J = {"a": "a", "b":"b"}
 document_payloads.add("document.json", json.dumps(J).encode()) # Add a json payload as bytes
 
@@ -67,7 +66,11 @@ document_payloads.add("radial.png", stream.getvalue()) # Add the png (in bytes) 
 def Test1(document):
     document.hello = "world" # Update the python instance
 
+    print(document)
+    print(document._type)
+
     r = repository.create(document) # Write to Cordra
+    print(json.dumps(r, indent=2))
     document.id = str( r["id"] ) # Update the id from None to the id assigned by Cordra
 
     document_remote = repository.read( document.id ) # Read the cordra object and compare to local
@@ -146,9 +149,13 @@ def Test4(document):
 
 # Test 5 - Update ACLs
 @deepcopy
-def Test5(document):
+def Test5():
     ## create user
-    # guest = 
+    guest = CordraObject(type="User", username="guest", password="guestpassword...1", 
+                         requirePasswordChange=False)
+    r = repository.create(guest)
+    guest.id = r["id"]
+
     ## create object with ACL that includes created user
     ## create an engine with the new user credentials
     ## check that object can be edited by the new user
@@ -182,5 +189,5 @@ if __name__ == "__main__":
         Test5(document)
     ]
 
-    for d in documents_returned:
-        Test6(d)
+    for i, d in enumerate( documents_returned ):
+        if d.id is not None: Test6(d)

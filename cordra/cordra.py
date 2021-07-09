@@ -175,7 +175,7 @@ class CordraClient(BaseModel):
     def create(self, obj, params=dict(), acl=None):
         """Uses write to create and object"""
 
-        params["type"] = obj.type
+        params["type"] = obj._type
 
         # if acl or self.acl:
         #     tmp_acl = dict(self.acl)
@@ -194,7 +194,7 @@ class CordraClient(BaseModel):
 
         assert obj.id is not None, "CordraObject needs id to update"
 
-        params["type"] = obj.type
+        params["type"] = obj._type
         action = partial( self._session.put, url=self._objects_url(obj.id) )
 
         update_obj = obj.copy()
@@ -252,7 +252,7 @@ class CordraClient(BaseModel):
 
         delete_params = {k:v for k,v in delete_params.items() if v}
 
-        r = self._session.delete( url=self._objects_url(obj.id), params=delete_params )
+        r = self._session.delete( url=self._objects_url(obj.id) )#, params=delete_params )
 
         return r
 
@@ -285,7 +285,7 @@ def tocordrajson(obj, **kwargs):
 
 
 class CordraObject(BaseModel):
-    type: str
+    _type: str=PrivateAttr()
     id: str=None
     related: "CordraObject"=None
     _cordraclient: CordraClient=PrivateAttr()
